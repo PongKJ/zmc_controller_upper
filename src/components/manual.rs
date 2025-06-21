@@ -1,0 +1,238 @@
+use crate::{
+    api::{zmc_converter_run, zmc_converter_stop, zmc_manual_move, zmc_manual_stop, zmc_set_zero},
+    app::GlobalState,
+};
+use leptos::{
+    ev::MouseEvent, logging, prelude::*, reactive::spawn_local,
+    server::codee::string::JsonSerdeCodec,
+};
+use leptos_use::use_cookie;
+use thaw::*;
+
+#[derive(Default, Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq)]
+pub struct ManualControl {
+    pub converter_frequency: u16,
+    pub converter_inverted: bool,
+    pub converter_enabled: bool,
+    // 对刀恢复坐标存储
+    pub pos_store_x: f32,
+    pub pos_store_y: f32,
+}
+
+fn manual_move(axis: u8, direction: i8) {
+    spawn_local(async move {
+        logging::log!("Moving axis {} in direction {}", axis, direction);
+        zmc_manual_move(axis, direction).await.unwrap();
+    });
+}
+fn manual_stop(axis: u8) {
+    spawn_local(async move {
+        logging::log!("Stopping axis {}", axis);
+        zmc_manual_stop(axis).await.unwrap();
+    });
+}
+
+#[component]
+fn ControlView() -> impl IntoView {
+    let (global_state, set_global_state) =
+        use_cookie::<GlobalState, JsonSerdeCodec>("global_state_cookie");
+    // Ensure global state is initialized
+    if global_state.read_untracked().is_none() {
+        set_global_state.set(Some(GlobalState::default()));
+    }
+
+    let connected = move || global_state.get().unwrap().connected;
+
+    view! {
+        <div class="manual-view-container">
+            <div class="stop-resume-container">
+                <Button>"暂停"</Button>
+                <Button>"恢复"</Button>
+                <Button on_click=move |_ev:MouseEvent| {
+                    spawn_local(async move {
+                    zmc_set_zero().await.expect("Failed to set zero position");
+                });
+            }>"坐标置零"</Button>
+            </div>
+            <div class="joystick-container">
+                <Flex>
+                    <Flex vertical=true>
+                        <Flex align=FlexAlign::Center>
+                            <Button
+                                icon=icondata::AiUpOutlined
+                                on:mousedown=move |_| {
+                                    manual_move(1, 1);
+                                }
+                                on:mouseup=move |_| {
+                                    manual_stop(1);
+                                }
+                            />
+                        </Flex>
+                        <Flex>
+                            <Button
+                                icon=icondata::AiDownOutlined
+                                on:mousedown=move |_| {
+                                    manual_move(1, -1);
+                                }
+                                on:mouseup=move |_| {
+                                    manual_stop(1);
+                                }
+                            />
+                            <Button
+                                icon=icondata::AiLeftOutlined
+                                on:mousedown=move |_| {
+                                    manual_move(0, -1);
+                                }
+                                on:mouseup=move |_| {
+                                    manual_stop(0);
+                                }
+                            />
+                            <Button
+                                icon=icondata::AiRightOutlined
+                                on:mousedown=move |_| {
+                                    manual_move(0, 1);
+                                }
+                                on:mouseup=move |_| {
+                                    manual_stop(0);
+                                }
+                            />
+                            <Button
+                                icon=icondata::AiArrowUpOutlined
+                                on:mousedown=move |_| {
+                                    manual_move(2, 1);
+                                }
+                                on:mouseup=move |_| {
+                                    manual_stop(2);
+                                }
+                            />
+                            <Button
+                                icon=icondata::AiArrowDownOutlined
+                                on:mousedown=move |_| {
+                                    manual_move(2, -1);
+                                }
+                                on:mouseup=move |_| {
+                                    manual_stop(2);
+                                }
+                            />
+                        </Flex>
+                    </Flex>
+                </Flex>
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn ConverterControlView() -> impl IntoView {
+    let (manual_control, set_manual_control) =
+        use_cookie::<ManualControl, JsonSerdeCodec>("manual_control_cookie");
+    // Ensure manual control is initialized
+    if manual_control.read_untracked().is_none() {
+        set_manual_control.set(Some(ManualControl::default()));
+    }
+
+    let frequency = RwSignal::new(
+        manual_control
+            .get_untracked()
+            .unwrap_or_default()
+            .converter_frequency
+            .to_string(),
+    );
+    let inverted = RwSignal::new(
+        manual_control
+            .get_untracked()
+            .unwrap_or_default()
+            .converter_inverted,
+    );
+    let enabled = RwSignal::new(
+        manual_control
+            .get_untracked()
+            .unwrap_or_default()
+            .converter_enabled,
+    );
+
+    Effect::watch(
+        move || (frequency.get().clone(), *inverted.read(), *enabled.read()),
+        move |(f, i, e), _, _| {
+            set_manual_control.update(|manual_control| {
+                if manual_control.is_none() {
+                    *manual_control = Some(ManualControl {
+                        converter_frequency: f.parse().unwrap_or(0),
+                        converter_inverted: *i,
+                        converter_enabled: *e,
+                        pos_store_x: 0.0,
+                        pos_store_y: 0.0,
+                    });
+                } else {
+                    let manual_control = manual_control
+                        .as_mut()
+                        .expect("ManualControl should not be None");
+                    manual_control.converter_frequency = f.parse().unwrap_or(0);
+                    manual_control.converter_inverted = *i;
+                    manual_control.converter_enabled = *e;
+                }
+            });
+        },
+        false,
+    );
+    let on_control_click = move |_ev: MouseEvent| {
+        let frequency_value = frequency.get().parse::<u32>().unwrap_or(0);
+        let inverted_value = *inverted.read();
+        let en = *enabled.read();
+        spawn_local(async move {
+            if en {
+                logging::log!("Converter is already enabled, stopping it first.");
+                match zmc_converter_stop().await {
+                    Ok(_) => {
+                        logging::log!("Converter stopped successfully.");
+                        *enabled.write() = false;
+                    }
+                    Err(e) => {
+                        logging::error!("Failed to stop converter: {}", e);
+                        return;
+                    }
+                };
+            } else {
+                logging::log!(
+                    "Starting converter with frequency: {}, inverted: {}",
+                    frequency.read_untracked(),
+                    inverted.read_untracked()
+                );
+                match zmc_converter_run(frequency_value, inverted_value).await {
+                    Ok(_) => {
+                        logging::log!("Converter started successfully.");
+                        *enabled.write() = true;
+                    }
+                    Err(e) => {
+                        logging::error!("Failed to start converter: {}", e);
+                    }
+                }
+            }
+        });
+    };
+
+    let enabled = move || manual_control.get().unwrap_or_default().converter_enabled;
+
+    view! {
+        <Input value=frequency input_type=InputType::Number placeholder="输入频率" />
+        <Switch checked=inverted value="inverted" label="反转" />
+        <Button
+            on_click=on_control_click
+            appearance=Signal::derive(move || {
+                if enabled() { ButtonAppearance::Primary } else { ButtonAppearance::Secondary }
+            })
+        >
+            {move || { if enabled() { "停止" } else { "启动" } }}
+        </Button>
+    }
+}
+
+#[component]
+pub fn ManualView() -> impl IntoView {
+    view! {
+        <Flex vertical=true>
+            <ControlView />
+            <ConverterControlView />
+        </Flex>
+    }
+}

@@ -1,0 +1,21 @@
+body {
+  font-family: sans-serif;
+  text-align: center;
+}
+
+.red span {
+  color: red;
+}
+
+.green span {
+  color: green;
+}
+
+.limit-input input,
+.pid-input input {
+  display: flex;
+  text-align: center;
+  justify-content: center;
+  width: 100%;
+  align-items: center;
+}
