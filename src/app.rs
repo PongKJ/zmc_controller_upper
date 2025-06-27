@@ -39,13 +39,9 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 pub fn App() -> impl IntoView {
     // Provides context that manages stylesheets, titles, meta tags, etc.
     provide_meta_context();
+    // Provides context for WebSocket connections
+    leptos_ws::provide_websocket("ws://localhost:3000/ws");
 
-    let (parameters, set_parameters) =
-        use_cookie::<Parameters, JsonSerdeCodec>("parameters_cookie");
-    // Ensure parameters are initialized
-    if parameters.read_untracked().is_none() {
-        set_parameters.set(Some(Parameters::default()));
-    }
 
     view! {
         // injects a stylesheet into the document <head>
@@ -88,7 +84,7 @@ fn HomePage() -> impl IntoView {
 
     view! {
         <Flex>
-            <Flex align=FlexAlign::Start>
+            <Flex align=FlexAlign::Start class="flex-left">
                 <NavDrawer>
                     <NavItem value="parameters" href="/parameters">
                         "Parameters"
@@ -112,10 +108,10 @@ fn HomePage() -> impl IntoView {
                     </NavDrawerFooter>
                 </NavDrawer>
             </Flex>
-            <Flex align=FlexAlign::Center>
+            <Flex align=FlexAlign::Center class="flex-center">
                 <Outlet />
             </Flex>
-            <Flex attr:style="height: 100%" align=FlexAlign::End>
+            <Flex align=FlexAlign::End class="flex-right">
                 <VisualView />
             </Flex>
         </Flex>

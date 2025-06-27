@@ -1,5 +1,9 @@
+use crate::model::{ManualControl, Parameters};
 use crate::{
-    api::{zmc_converter_run, zmc_converter_stop, zmc_manual_move, zmc_manual_stop, zmc_set_zero},
+    api::{
+        zmc_converter_run, zmc_converter_set_freq, zmc_converter_stop, zmc_manual_move,
+        zmc_manual_stop, zmc_set_zero,
+    },
     app::GlobalState,
 };
 use leptos::{
@@ -8,16 +12,6 @@ use leptos::{
 };
 use leptos_use::use_cookie;
 use thaw::*;
-
-#[derive(Default, Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq)]
-pub struct ManualControl {
-    pub converter_frequency: u16,
-    pub converter_inverted: bool,
-    pub converter_enabled: bool,
-    // 对刀恢复坐标存储
-    pub pos_store_x: f32,
-    pub pos_store_y: f32,
-}
 
 fn manual_move(axis: u8, direction: i8) {
     spawn_local(async move {
@@ -40,24 +34,31 @@ fn ControlView() -> impl IntoView {
     if global_state.read_untracked().is_none() {
         set_global_state.set(Some(GlobalState::default()));
     }
+    let (parameters, set_parameters) =
+        use_cookie::<Parameters, JsonSerdeCodec>("parameters_cookie");
+    // Ensure parameters are initialized
+    if parameters.read_untracked().is_none() {
+        set_parameters.set(Some(Parameters::default()));
+    }
 
     let connected = move || global_state.get().unwrap().connected;
 
     view! {
         <div class="manual-view-container">
-            <div class="stop-resume-container">
-                <Button>"暂停"</Button>
-                <Button>"恢复"</Button>
-                <Button on_click=move |_ev:MouseEvent| {
+            <div class="axis-control-container">
+                <Button on_click=move |_ev: MouseEvent| {
+                    let params = parameters.get_untracked().expect("parameters should exist");
                     spawn_local(async move {
-                    zmc_set_zero().await.expect("Failed to set zero position");
-                });
-            }>"坐标置零"</Button>
+                        zmc_set_zero(vec![params.x.axis_num, params.y.axis_num, params.z.axis_num])
+                            .await
+                            .expect("Failed to set zero position");
+                    });
+                }>"坐标置零"</Button>
             </div>
             <div class="joystick-container">
                 <Flex>
                     <Flex vertical=true>
-                        <Flex align=FlexAlign::Center>
+                        <Flex justify=FlexJustify::Center>
                             <Button
                                 icon=icondata::AiUpOutlined
                                 on:mousedown=move |_| {
@@ -68,16 +69,7 @@ fn ControlView() -> impl IntoView {
                                 }
                             />
                         </Flex>
-                        <Flex>
-                            <Button
-                                icon=icondata::AiDownOutlined
-                                on:mousedown=move |_| {
-                                    manual_move(1, -1);
-                                }
-                                on:mouseup=move |_| {
-                                    manual_stop(1);
-                                }
-                            />
+                        <Flex justify=FlexJustify::Center>
                             <Button
                                 icon=icondata::AiLeftOutlined
                                 on:mousedown=move |_| {
@@ -87,6 +79,7 @@ fn ControlView() -> impl IntoView {
                                     manual_stop(0);
                                 }
                             />
+                            <div style="width: 30px;" />
                             <Button
                                 icon=icondata::AiRightOutlined
                                 on:mousedown=move |_| {
@@ -96,25 +89,40 @@ fn ControlView() -> impl IntoView {
                                     manual_stop(0);
                                 }
                             />
+                        </Flex>
+                        <Flex justify=FlexJustify::Center>
                             <Button
-                                icon=icondata::AiArrowUpOutlined
+                                icon=icondata::AiDownOutlined
                                 on:mousedown=move |_| {
-                                    manual_move(2, 1);
+                                    manual_move(1, -1);
                                 }
                                 on:mouseup=move |_| {
-                                    manual_stop(2);
-                                }
-                            />
-                            <Button
-                                icon=icondata::AiArrowDownOutlined
-                                on:mousedown=move |_| {
-                                    manual_move(2, -1);
-                                }
-                                on:mouseup=move |_| {
-                                    manual_stop(2);
+                                    manual_stop(1);
                                 }
                             />
                         </Flex>
+                    </Flex>
+                    <div style="width: 20px;" />
+                    <Flex vertical=true justify=FlexJustify::Center>
+                        <Button
+                            icon=icondata::AiArrowUpOutlined
+                            on:mousedown=move |_| {
+                                manual_move(2, 1);
+                            }
+                            on:mouseup=move |_| {
+                                manual_stop(2);
+                            }
+                        />
+                        <div style="height: 10px;" />
+                        <Button
+                            icon=icondata::AiArrowDownOutlined
+                            on:mousedown=move |_| {
+                                manual_move(2, -1);
+                            }
+                            on:mouseup=move |_| {
+                                manual_stop(2);
+                            }
+                        />
                     </Flex>
                 </Flex>
             </div>
@@ -198,15 +206,23 @@ fn ConverterControlView() -> impl IntoView {
                     frequency.read_untracked(),
                     inverted.read_untracked()
                 );
-                match zmc_converter_run(frequency_value, inverted_value).await {
+                match zmc_converter_set_freq(frequency_value).await {
                     Ok(_) => {
                         logging::log!("Converter started successfully.");
-                        *enabled.write() = true;
                     }
                     Err(e) => {
                         logging::error!("Failed to start converter: {}", e);
                     }
                 }
+                match zmc_converter_run(inverted_value).await {
+                    Ok(_) => {
+                        logging::log!("Converter run command sent successfully.");
+                        *enabled.write() = true;
+                    }
+                    Err(e) => {
+                        logging::error!("Failed to run converter: {}", e);
+                    }
+                };
             }
         });
     };

@@ -1,4 +1,9 @@
 #[cfg(feature = "ssr")]
+use axum::routing::get;
+#[cfg(feature = "ssr")]
+use leptos_ws::server_signals::ServerSignals;
+
+#[cfg(feature = "ssr")]
 #[tokio::main]
 async fn main() {
     use axum::Router;
@@ -13,11 +18,24 @@ async fn main() {
     // Generate the list of routes in your Leptos App
     let routes = generate_route_list(App);
 
+    let server_signals = ServerSignals::new();
+
     let app = Router::new()
-        .leptos_routes(&leptos_options, routes, {
-            let leptos_options = leptos_options.clone();
-            move || shell(leptos_options.clone())
-        })
+        .route(
+            "/ws",
+            get(leptos_ws::axum::websocket(server_signals.clone())),
+        )
+        .leptos_routes_with_context(
+            &leptos_options,
+            routes,
+            move || {
+                provide_context(server_signals.clone());
+            },
+            {
+                let leptos_options = leptos_options.clone();
+                move || shell(leptos_options.clone())
+            },
+        )
         .fallback(leptos_axum::file_and_error_handler(shell))
         .with_state(leptos_options);
 

@@ -1,3 +1,4 @@
+use crate::model::Parameters;
 use leptos::logging::{self, log};
 use leptos::prelude::*;
 use leptos::server::codee::string::JsonSerdeCodec;
@@ -6,66 +7,8 @@ use leptos_use::use_cookie;
 use thaw::ssr::SSRMountStyleProvider;
 use thaw::*;
 
-use crate::api::{zmc_close, zmc_set_in_inverted, zmc_set_parameters};
-use crate::{api::zmc_open_eth, app::GlobalState};
-
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct InvertedStatus {
-    pub emergency_stop_level_inverted: bool,
-    pub door_switch_level_inverted: bool,
-    pub limit_io_level_inverted: bool,
-}
-
-#[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct AxisParameters {
-    // 脉冲当量
-    pub pulse_equivalent: f32,
-    // 软件正限位
-    pub software_positive_limit: f32,
-    // 软件负限位
-    pub software_negative_limit: f32,
-    // 限位IO设置参数
-    // 正限位IO
-    pub positive_limit_io: u16,
-    // 负限位IO
-    pub negative_limit_io: u16,
-    // 零点IO
-    pub zero_point_io: u16,
-}
-
-#[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct PidParameters {
-    pub p: f32,
-    pub i: f32,
-    pub d: f32,
-}
-#[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct SpeedParameters {
-    // 加工速度
-    pub processing_speed: f32,
-    // 最大速度
-    pub max_speed: f32,
-    pub acceleration: f32,
-    pub deceleration: f32,
-    // 过渡时间
-    pub transition_time: f32,
-    // 爬行速度
-    pub crawling_speed: f32,
-}
-#[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct Parameters {
-    pub ip: String,
-    pub pid: PidParameters,
-    pub x: AxisParameters,
-    pub y: AxisParameters,
-    pub z: AxisParameters,
-    // 急停IO
-    pub emergency_stop_io: u16,
-    pub speed: SpeedParameters,
-    // 门限位IO
-    pub door_switch_io: u16,
-    pub inverted_status: InvertedStatus,
-}
+use crate::api::{zmc_close, zmc_set_parameters};
+use crate::{api::zmc_init_eth, app::GlobalState};
 
 #[component]
 pub fn ParametersView() -> impl IntoView {
@@ -80,12 +23,6 @@ pub fn ParametersView() -> impl IntoView {
         move || parameters.get().unwrap(),
         move |p, _, _| {
             log!("Parameters updated: {:?}", p);
-            let p = p.clone();
-            spawn_local(async move {
-                zmc_set_parameters(p)
-                    .await
-                    .expect("Failed to set parameters");
-            });
         },
         false,
     );
@@ -109,12 +46,21 @@ pub fn ParametersView() -> impl IntoView {
 
 #[component]
 fn ParametersInput() -> impl IntoView {
+    let (global_state, set_global_state) =
+        use_cookie::<GlobalState, JsonSerdeCodec>("global_state_cookie");
+    // Ensure global state is initialized
+    if global_state.read_untracked().is_none() {
+        set_global_state.set(Some(GlobalState::default()));
+    }
+
     let (parameters, set_parameters) =
         use_cookie::<Parameters, JsonSerdeCodec>("parameters_cookie");
     // Ensure parameters are initialized
     if parameters.read_untracked().is_none() {
         set_parameters.set(Some(Parameters::default()));
     }
+
+    let connected = move || global_state.get().unwrap().connected;
 
     let allow_float = |value: String| {
         // Allow only digits and a single decimal point
@@ -131,12 +77,18 @@ fn ParametersInput() -> impl IntoView {
         value.chars().all(|c| c.is_digit(10))
     };
 
+    let parameters_tracked = move || parameters.get().unwrap();
+
+    let parameters = parameters.get_untracked().unwrap();
     // Shit code :(
     // signals to bind to input fields
-    let parameters = parameters.get_untracked().unwrap();
     let v_p = RwSignal::new(parameters.pid.p.to_string());
     let v_i = RwSignal::new(parameters.pid.i.to_string());
     let v_d = RwSignal::new(parameters.pid.d.to_string());
+
+    let v_x_axis_num = RwSignal::new(parameters.x.axis_num.to_string());
+    let v_y_axis_num = RwSignal::new(parameters.y.axis_num.to_string());
+    let v_z_axis_num = RwSignal::new(parameters.z.axis_num.to_string());
 
     let v_pulse_equivalent_x = RwSignal::new(parameters.x.pulse_equivalent.to_string());
     let v_pulse_equivalent_y = RwSignal::new(parameters.y.pulse_equivalent.to_string());
@@ -164,6 +116,13 @@ fn ParametersInput() -> impl IntoView {
     let v_software_negative_limit_z =
         RwSignal::new(parameters.z.software_negative_limit.to_string());
 
+    let v_processing_speed = RwSignal::new(parameters.speed.processing_speed.to_string());
+    let v_max_speed = RwSignal::new(parameters.speed.max_speed.to_string());
+    let v_acceleration = RwSignal::new(parameters.speed.acceleration.to_string());
+    let v_deceleration = RwSignal::new(parameters.speed.deceleration.to_string());
+    let v_transition_time = RwSignal::new(parameters.speed.transition_time.to_string());
+    let v_crawling_speed = RwSignal::new(parameters.speed.crawling_speed.to_string());
+
     let v_emergency_stop_io = RwSignal::new(parameters.emergency_stop_io.to_string());
     let v_door_switch_io = RwSignal::new(parameters.door_switch_io.to_string());
 
@@ -178,9 +137,12 @@ fn ParametersInput() -> impl IntoView {
         // Validate and parse the PID parameters
         set_parameters.update(|params| {
             let params = params.as_mut().expect("Parameters should not be None");
-            params.pid.p = v_p.get().parse().unwrap_or(0.0);
-            params.pid.i = v_i.get().parse().unwrap_or(0.0);
-            params.pid.d = v_d.get().parse().unwrap_or(0.0);
+            params.pid.p = v_p.get().parse().unwrap_or(0.5);
+            params.pid.i = v_i.get().parse().unwrap_or(0.5);
+            params.pid.d = v_d.get().parse().unwrap_or(0.5);
+            params.x.axis_num = v_x_axis_num.get().parse().unwrap_or(0);
+            params.y.axis_num = v_y_axis_num.get().parse().unwrap_or(1);
+            params.z.axis_num = v_z_axis_num.get().parse().unwrap_or(2);
             params.x.pulse_equivalent = v_pulse_equivalent_x.get().parse().unwrap_or(0.0);
             params.y.pulse_equivalent = v_pulse_equivalent_y.get().parse().unwrap_or(0.0);
             params.z.pulse_equivalent = v_pulse_equivalent_z.get().parse().unwrap_or(0.0);
@@ -205,6 +167,12 @@ fn ParametersInput() -> impl IntoView {
                 v_software_positive_limit_z.get().parse().unwrap_or(0.0);
             params.z.software_negative_limit =
                 v_software_negative_limit_z.get().parse().unwrap_or(0.0);
+            params.speed.processing_speed = v_processing_speed.get().parse().unwrap_or(0.0);
+            params.speed.max_speed = v_max_speed.get().parse().unwrap_or(0.0);
+            params.speed.acceleration = v_acceleration.get().parse().unwrap_or(0.0);
+            params.speed.deceleration = v_deceleration.get().parse().unwrap_or(0.0);
+            params.speed.transition_time = v_transition_time.get().parse().unwrap_or(0.0);
+            params.speed.crawling_speed = v_crawling_speed.get().parse().unwrap_or(0.0);
             params.emergency_stop_io = v_emergency_stop_io.get().parse().unwrap_or(0);
             params.door_switch_io = v_door_switch_io.get().parse().unwrap_or(0);
             params.inverted_status.emergency_stop_level_inverted =
@@ -212,6 +180,14 @@ fn ParametersInput() -> impl IntoView {
             params.inverted_status.door_switch_level_inverted = v_door_switch_level_inverted.get();
             params.inverted_status.limit_io_level_inverted = v_limit_io_level_inverted.get();
         });
+        if connected() {
+            let p = parameters_tracked();
+            spawn_local(async move {
+                zmc_set_parameters(p)
+                    .await
+                    .expect("Failed to set parameters");
+            });
+        }
         log!("Parameters saved");
     };
 
@@ -265,13 +241,24 @@ fn ParametersInput() -> impl IntoView {
                 </TableHeader>
                 <TableBody>
                     <TableRow>
+                        <TableCell>"轴号"</TableCell>
+                        <TableCell>
+                            <Input class="axis-input" value=v_x_axis_num placeholder="float" />
+                        </TableCell>
+                        <TableCell>
+                            <Input class="axis-input" value=v_y_axis_num placeholder="float" />
+                        </TableCell>
+                        <TableCell>
+                            <Input class="axis-input" value=v_z_axis_num placeholder="float" />
+                        </TableCell>
+                    </TableRow>
+                    <TableRow>
                         <TableCell>"脉冲当量"</TableCell>
                         <TableCell>
                             <Input
                                 class="limit-input"
                                 value=v_pulse_equivalent_x
                                 placeholder="float"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                         <TableCell>
@@ -279,7 +266,6 @@ fn ParametersInput() -> impl IntoView {
                                 class="limit-input"
                                 value=v_pulse_equivalent_y
                                 placeholder="float"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                         <TableCell>
@@ -287,7 +273,6 @@ fn ParametersInput() -> impl IntoView {
                                 class="limit-input"
                                 value=v_pulse_equivalent_z
                                 placeholder="float"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                     </TableRow>
@@ -298,7 +283,6 @@ fn ParametersInput() -> impl IntoView {
                                 class="limit-input"
                                 value=v_positive_limit_io_x
                                 placeholder="int"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                         <TableCell>
@@ -306,7 +290,6 @@ fn ParametersInput() -> impl IntoView {
                                 class="limit-input"
                                 value=v_positive_limit_io_y
                                 placeholder="int"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                         <TableCell>
@@ -314,7 +297,6 @@ fn ParametersInput() -> impl IntoView {
                                 class="limit-input"
                                 value=v_positive_limit_io_z
                                 placeholder="int"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                     </TableRow>
@@ -325,7 +307,6 @@ fn ParametersInput() -> impl IntoView {
                                 class="limit-input"
                                 value=v_negative_limit_io_x
                                 placeholder="int"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                         <TableCell>
@@ -333,7 +314,6 @@ fn ParametersInput() -> impl IntoView {
                                 class="limit-input"
                                 value=v_negative_limit_io_y
                                 placeholder="int"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                         <TableCell>
@@ -341,35 +321,19 @@ fn ParametersInput() -> impl IntoView {
                                 class="limit-input"
                                 value=v_negative_limit_io_z
                                 placeholder="int"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                     </TableRow>
                     <TableRow>
                         <TableCell>"零点IO"</TableCell>
                         <TableCell>
-                            <Input
-                                class="limit-input"
-                                value=v_zero_point_io_x
-                                placeholder="int"
-                                input_type=InputType::Number
-                            />
+                            <Input class="limit-input" value=v_zero_point_io_x placeholder="int" />
                         </TableCell>
                         <TableCell>
-                            <Input
-                                class="limit-input"
-                                value=v_zero_point_io_y
-                                placeholder="int"
-                                input_type=InputType::Number
-                            />
+                            <Input class="limit-input" value=v_zero_point_io_y placeholder="int" />
                         </TableCell>
                         <TableCell>
-                            <Input
-                                class="limit-input"
-                                value=v_zero_point_io_z
-                                placeholder="int"
-                                input_type=InputType::Number
-                            />
+                            <Input class="limit-input" value=v_zero_point_io_z placeholder="int" />
                         </TableCell>
                     </TableRow>
                     <TableRow>
@@ -379,7 +343,6 @@ fn ParametersInput() -> impl IntoView {
                                 class="limit-input"
                                 value=v_software_positive_limit_x
                                 placeholder="int"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                         <TableCell>
@@ -387,7 +350,6 @@ fn ParametersInput() -> impl IntoView {
                                 class="limit-input"
                                 value=v_software_positive_limit_y
                                 placeholder="int"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                         <TableCell>
@@ -395,7 +357,6 @@ fn ParametersInput() -> impl IntoView {
                                 class="limit-input"
                                 value=v_software_positive_limit_z
                                 placeholder="int"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                     </TableRow>
@@ -406,7 +367,6 @@ fn ParametersInput() -> impl IntoView {
                                 class="limit-input"
                                 value=v_software_negative_limit_x
                                 placeholder="int"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                         <TableCell>
@@ -414,7 +374,6 @@ fn ParametersInput() -> impl IntoView {
                                 class="limit-input"
                                 value=v_software_negative_limit_y
                                 placeholder="int"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                         <TableCell>
@@ -422,7 +381,6 @@ fn ParametersInput() -> impl IntoView {
                                 class="limit-input"
                                 value=v_software_negative_limit_z
                                 placeholder="int"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                     </TableRow>
@@ -433,17 +391,41 @@ fn ParametersInput() -> impl IntoView {
                                 class="limit-input"
                                 value=v_emergency_stop_io
                                 placeholder="int"
-                                input_type=InputType::Number
                             />
                         </TableCell>
                         <TableCell>"门限位IO"</TableCell>
                         <TableCell>
-                            <Input
-                                class="limit-input"
-                                value=v_door_switch_io
-                                placeholder="int"
-                                input_type=InputType::Number
-                            />
+                            <Input class="limit-input" value=v_door_switch_io placeholder="int" />
+                        </TableCell>
+                    </TableRow>
+                    <TableRow>
+                        <TableCell>"加工速度"</TableCell>
+                        <TableCell>
+                            <Input class="limit-input" value=v_processing_speed placeholder="int" />
+                        </TableCell>
+                        <TableCell>"最大速度"</TableCell>
+                        <TableCell>
+                            <Input class="limit-input" value=v_max_speed placeholder="int" />
+                        </TableCell>
+                    </TableRow>
+                    <TableRow>
+                        <TableCell>"加速度"</TableCell>
+                        <TableCell>
+                            <Input class="limit-input" value=v_acceleration placeholder="int" />
+                        </TableCell>
+                        <TableCell>"减速度"</TableCell>
+                        <TableCell>
+                            <Input class="limit-input" value=v_deceleration placeholder="int" />
+                        </TableCell>
+                    </TableRow>
+                    <TableRow>
+                        <TableCell>"过渡时间"</TableCell>
+                        <TableCell>
+                            <Input class="limit-input" value=v_transition_time placeholder="int" />
+                        </TableCell>
+                        <TableCell>"爬行速度"</TableCell>
+                        <TableCell>
+                            <Input class="limit-input" value=v_crawling_speed placeholder="int" />
                         </TableCell>
                     </TableRow>
                 </TableBody>
@@ -481,6 +463,12 @@ fn ConnectionInput() -> impl IntoView {
         set_global_state.set(Some(GlobalState::default()));
     }
 
+    let (ip_addr, set_ip_addr) = use_cookie::<String, JsonSerdeCodec>("ip_addr_cookie");
+    // Ensure global state is initialized
+    if ip_addr.read_untracked().is_none() {
+        set_ip_addr.set(Some(String::new()));
+    }
+
     let connected = move || global_state.get().unwrap().connected;
 
     let (parameters, set_parameters) =
@@ -492,14 +480,12 @@ fn ConnectionInput() -> impl IntoView {
 
     let toaster = ToasterInjection::expect_context();
 
-    let v_ip = RwSignal::new(parameters.get_untracked().unwrap().ip);
+    let v_ip = RwSignal::new(ip_addr.get_untracked().unwrap());
 
     Effect::watch(
         move || v_ip.get(),
         move |ip, _, _| {
-            set_parameters.update(|params| {
-                params.as_mut().unwrap().ip = ip.trim().to_string();
-            });
+            set_ip_addr.set(Some(ip.to_string()));
             log!("IP updated: {}", ip);
         },
         false,
@@ -510,7 +496,7 @@ fn ConnectionInput() -> impl IntoView {
             let ip = v_ip.get().trim().to_string();
             log!("Connecting to IP: {}", ip);
             spawn_local(async move {
-                match zmc_open_eth(ip).await {
+                match zmc_init_eth(ip).await {
                     Ok(_) => {
                         log!("Connected successfully");
                         set_global_state.update(|state| {
