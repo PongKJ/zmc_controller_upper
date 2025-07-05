@@ -35,11 +35,12 @@ pub struct ZmcManager {
     polling_interval: Arc<Mutex<Duration>>,
     polling_tasks: Arc<Mutex<JoinSet<Result<(), ServerFnError>>>>,
     limit_status: ServerSignal<LimitStatus>,
-    move_status: ServerSignal<MoveStatus>,
+    move_status: Arc<Mutex<MoveStatus>>,
+    move_status_signal: ServerSignal<MoveStatus>,
     // For drawing the movement path
     path_img_update_counter: Arc<Mutex<u32>>,
-    path_img: ServerSignal<String>,
     bitmap: Arc<Mutex<Bitmap>>, // 500x500 bitmap with scale 10.0
+    path_img: ServerSignal<String>,
 }
 
 #[cfg(feature = "ssr")]
@@ -77,42 +78,25 @@ async fn update_limit_status(
 async fn update_move_status(
     controller: &mut Box<dyn Controller + Send>,
     params: &Parameters,
-    move_status: &mut ServerSignal<MoveStatus>,
+    move_status: &mut MoveStatus,
     bitmap: &mut Bitmap,
 ) -> Result<(), ControllerError> {
     let x_axis = params.x.axis_num;
     let y_axis = params.y.axis_num;
     let z_axis = params.z.axis_num;
 
-    let x_speed = controller.direct_get_m_speed(x_axis)?;
-    let y_speed = controller.direct_get_m_speed(y_axis)?;
-    let z_speed = controller.direct_get_m_speed(z_axis)?;
-    // TODO: Verify this: Change direct_get_d_pos to direct_get_m_pos
     let x_pos = controller.direct_get_m_pos(x_axis)?;
     let y_pos = controller.direct_get_m_pos(y_axis)?;
     let z_pos = controller.direct_get_m_pos(z_axis)?;
-    let x_is_idle = controller.direct_get_if_idle(x_axis)?;
-    let y_is_idle = controller.direct_get_if_idle(y_axis)?;
-    let z_is_idle = controller.direct_get_if_idle(z_axis)?;
-    move_status.update(|status| {
-        *status = MoveStatus {
-            x: AxisMoveStatus {
-                is_idle: x_is_idle,
-                speed: x_speed,
-                pos: x_pos,
-            },
-            y: AxisMoveStatus {
-                is_idle: y_is_idle,
-                speed: y_speed,
-                pos: y_pos,
-            },
-            z: AxisMoveStatus {
-                is_idle: z_is_idle,
-                speed: z_speed,
-                pos: z_pos,
-            },
-        };
-    });
+    move_status.x.speed = controller.direct_get_m_speed(x_axis)?;
+    move_status.y.speed = controller.direct_get_m_speed(y_axis)?;
+    move_status.z.speed = controller.direct_get_m_speed(z_axis)?;
+    move_status.x.pos = x_pos;
+    move_status.y.pos = y_pos;
+    move_status.z.pos = z_pos;
+    move_status.x.is_idle = controller.direct_get_if_idle(x_axis)?;
+    move_status.y.is_idle = controller.direct_get_if_idle(y_axis)?;
+    move_status.z.is_idle = controller.direct_get_if_idle(z_axis)?;
     // Update the SVG path for visualization
     // 80x80 to 500x500 bitmap with scale 10.0
     bitmap.set_pixel(x_pos, y_pos, (-z_pos) * 75.0);
@@ -127,7 +111,8 @@ impl ZmcManager {
         let controller = self.controller.clone();
         let parameters = self.parameters.clone();
         let mut limit_status = self.limit_status.clone();
-        let mut move_status = self.move_status.clone();
+        let move_status = self.move_status.clone();
+        let move_status_signal = self.move_status_signal.clone();
         let path_img = self.path_img.clone();
         let bitmap = self.bitmap.clone();
         let counter = self.path_img_update_counter.clone();
@@ -145,6 +130,7 @@ impl ZmcManager {
                     let mut parameters = parameters.lock().await;
                     let mut bitmap = bitmap.lock().await;
                     let mut counter = counter.lock().await;
+                    let mut move_status = move_status.lock().await;
                     // Update the move status
                     // Don't update the limit status and path img too frequently
                     if *counter > UPDATE_COUNT {
@@ -155,6 +141,9 @@ impl ZmcManager {
                         update_limit_status(&mut controller, &mut parameters, &mut limit_status)
                             .await
                             .expect("Failed to update limit status");
+                        move_status_signal.update(|status| {
+                            *status = move_status.clone();
+                        });
                     } else {
                         // println!("Skipping limit status update, counter: {}", *counter);
                         *counter += 1;
@@ -246,7 +235,9 @@ static ZMC_MANAGER: LazyLock<ZmcManager> = LazyLock::new(|| ZmcManager {
     polling_interval: Arc::new(Mutex::new(Duration::from_millis(100))),
     polling_tasks: Arc::new(Mutex::new(JoinSet::new())),
     limit_status: ServerSignal::new("limit_status".to_string(), LimitStatus::default()).unwrap(),
-    move_status: ServerSignal::new("move_status".to_string(), MoveStatus::default()).unwrap(),
+    move_status: Arc::new(Mutex::new(MoveStatus::default())),
+    move_status_signal: ServerSignal::new("move_status".to_string(), MoveStatus::default())
+        .unwrap(),
     path_img_update_counter: Arc::new(Mutex::new(0)),
     path_img: ServerSignal::new("path_img".to_string(), String::new()).unwrap(),
     bitmap: Arc::new(Mutex::new(Bitmap::new(500, 500, 4.0))), // 500x500 bitmap with scale 10.0
@@ -306,8 +297,8 @@ pub async fn zmc_set_parameters(params: Parameters) -> Result<(), ServerFnError>
 
             for i in axis_num_list {
                 // TODO: Change to 65 after simulation
-                controller.direct_set_a_type(i, 0)?;
-                // controller.direct_set_a_type(i, 65)?;
+                // controller.direct_set_a_type(i, 0)?;
+                controller.direct_set_a_type(i, 65)?;
                 controller.direct_set_speed(i, params.speed.processing_speed)?;
                 // 设置初始速度为0
                 controller.direct_set_l_speed(i, 0.0)?;

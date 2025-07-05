@@ -1,6 +1,8 @@
 use crate::api::{
     zmc_converter_run, zmc_converter_set_freq, zmc_converter_stop, zmc_move_abs, zmc_set_speed,
 };
+#[cfg(feature = "ssr")]
+use crate::utils::Bitmap;
 use leptos::prelude::*;
 use leptos_ws::ServerSignal;
 #[cfg(feature = "ssr")]
@@ -9,8 +11,6 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 #[cfg(feature = "ssr")]
 use tokio::sync::Mutex;
-#[cfg(feature = "ssr")]
-use crate::utils::Bitmap;
 
 #[cfg(feature = "ssr")]
 #[derive(Debug, serde::Serialize, serde::Deserialize, thiserror::Error)]
@@ -29,55 +29,102 @@ struct GCodeManager {
     current_line: ServerSignal<usize>,
     thread_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     bitmap: Arc<Mutex<Bitmap>>,
+    path_img_preview: ServerSignal<String>,
+    preview_processed_line: ServerSignal<usize>,
 }
 
 #[cfg(feature = "ssr")]
 impl GCodeManager {
-    pub fn new() -> Self {
-        GCodeManager {
-            lines: Arc::new(Mutex::new(Vec::new())),
-            current_line: ServerSignal::new("current_line".to_string(), 0).unwrap(),
-            thread_handle: Arc::new(Mutex::new(None)),
-            bitmap: Arc::new(Mutex::new(Bitmap::new(800, 800, 4.0))),
-        }
-    }
-
     pub async fn load_gcode(&self, content: String) {
         let mut lines = self.lines.lock().await;
         *lines = content.lines().map(|line| line.to_string()).collect();
         self.current_line.update(|v| *v = 0);
     }
 
-    // Add a new method to generate the bitmap path preview
     pub async fn generate_path_preview(&self) -> Result<(), String> {
-        let lines = self.lines.lock().await;
-        let mut bitmap = self.bitmap.lock().await;
+        let lines = self.lines.clone();
+        let bitmap = self.bitmap.clone();
+        let preview_processed_line = self.preview_processed_line.clone();
+        let path_img_preview = self.path_img_preview.clone();
 
-        // Clear the bitmap before drawing new path
-        bitmap.clear();
+        // Start async task for coordinating the work
+        tokio::spawn(async move {
+            // Step 1: First acquire the locks and prepare data
+            let lines_data = {
+                let locked_lines = lines.lock().await;
+                locked_lines.clone() // Clone the data while lock is held
+            }; // Lock is released here
 
-        // Initialize tool position
-        let mut current_x: f32 = 0.0;
-        let mut current_y: f32 = 0.0;
-        let mut current_z: f32 = 0.0;
+            // Clear the bitmap (quick operation)
+            {
+                let mut locked_bitmap = bitmap.lock().await;
+                locked_bitmap.clear();
+            } // Lock is released immediately after clearing
 
-        // Process all G-code lines to generate the path
-        for line in lines.iter() {
-            if let Some(command) = parse_gcode_line(line) {
-                preview_gcode_movement(
-                    &command,
-                    &mut bitmap,
-                    &mut current_x,
-                    &mut current_y,
-                    &mut current_z,
-                );
+            // Step 2: Process data in batches with yield points
+            let mut processed_bitmap = Bitmap::new(800, 800, 4.0); // Create a new bitmap for processing
+            let mut current_x: f32 = 0.0;
+            let mut current_y: f32 = 0.0;
+            let mut current_z: f32 = 0.0;
+
+            println!("Generating path preview...");
+
+            // Process in chunks with yield points
+            for (i, chunk) in lines_data.chunks(1000).enumerate() {
+                // Process this chunk in a blocking task
+                let chunk_data = chunk.to_vec(); // 克隆chunk数据
+                let chunk_result = tokio::task::spawn_blocking(move || {
+                    println!("Processing chunk {}...", i + 1);
+                    let mut temp_bitmap = Bitmap::new(800, 800, 4.0);
+                    let mut temp_x = current_x;
+                    let mut temp_y = current_y;
+                    let mut temp_z = current_z;
+
+                    // Process each line in this chunk
+                    for line in &chunk_data {
+                        if let Some(command) = parse_gcode_line(line) {
+                            preview_gcode_movement(
+                                &command,
+                                &mut temp_bitmap,
+                                &mut temp_x,
+                                &mut temp_y,
+                                &mut temp_z,
+                            );
+                        }
+                    }
+
+                    (temp_bitmap, temp_x, temp_y, temp_z)
+                })
+                .await
+                .unwrap();
+
+                // Merge results back
+                let (chunk_bitmap, new_x, new_y, new_z) = chunk_result;
+                processed_bitmap.merge(&chunk_bitmap);
+                current_x = new_x;
+                current_y = new_y;
+                current_z = new_z;
+
+                // Update progress
+                preview_processed_line.update(|v| *v = (i + 1) * 1000);
+
+                // Yield to other tasks periodically
+                // tokio::task::yield_now().await;
             }
-        }
-        // Generate data URL and update the path_img signal
-        let data_url = bitmap.to_data_url();
-        let path_img = ServerSignal::new("path_img".to_string(), String::new()).unwrap();
-        path_img.update(|v| *v = data_url);
 
+            // Step 3: Update final bitmap and generate URL
+            let data_url = {
+                let mut locked_bitmap = bitmap.lock().await;
+                *locked_bitmap = processed_bitmap; // Replace with processed bitmap
+                locked_bitmap.to_data_url()
+            };
+
+            // Update path image signal
+            path_img_preview.update(|v| *v = data_url);
+            println!("Path preview generated successfully.");
+        });
+
+        println!("Thread spawned to generate path preview");
         Ok(())
     }
 
@@ -91,10 +138,8 @@ impl GCodeManager {
         // Spawn a new task to execute G-code lines
         let handle = tokio::spawn(async move {
             loop {
-                // Check if execution is completed
-                // TODO: Not necessary to check this flag
                 let lines = lines.lock().await;
-                let current_line_index = current_line.get();
+                let current_line_index = current_line.get_untracked();
                 if current_line_index >= lines.len() {
                     // All lines executed, exit the loop
                     println!("All G-code lines executed.");
@@ -652,10 +697,18 @@ pub async fn debug_update_line() -> Result<(), ServerFnError> {
 }
 
 #[cfg(feature = "ssr")]
-static G_CODE_MANAGER: LazyLock<GCodeManager> = LazyLock::new(GCodeManager::new);
+static G_CODE_MANAGER: LazyLock<GCodeManager> = LazyLock::new(|| GCodeManager {
+    lines: Arc::new(Mutex::new(Vec::new())),
+    current_line: ServerSignal::new("current_line".to_string(), 0).unwrap(),
+    thread_handle: Arc::new(Mutex::new(None)),
+    bitmap: Arc::new(Mutex::new(Bitmap::new(800, 800, 4.0))),
+    path_img_preview: ServerSignal::new("path_img_preview".to_string(), String::new()).unwrap(),
+    preview_processed_line: ServerSignal::new("preview_processed_line".to_string(), 0).unwrap(),
+});
 
 #[server]
 pub async fn load_gcode(content: String) -> Result<(), ServerFnError> {
+    println!("start loading gcode");
     G_CODE_MANAGER.load_gcode(content).await;
     Ok(())
 }
@@ -678,6 +731,9 @@ pub async fn reset_gcode_execution() -> Result<(), ServerFnError> {
 }
 #[server]
 pub async fn generate_path_preview() -> Result<(), ServerFnError> {
-    G_CODE_MANAGER.generate_path_preview().await.expect("Failed to generate path preview");
+    G_CODE_MANAGER
+        .generate_path_preview()
+        .await
+        .expect("Failed to generate path preview");
     Ok(())
 }

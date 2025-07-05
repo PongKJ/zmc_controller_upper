@@ -46,20 +46,28 @@ fn ControlView() -> impl IntoView {
     view! {
         <div class="manual-view-container">
             <div class="axis-control-container">
-                <Button on_click=move |_ev: MouseEvent| {
-                    let params = parameters.get_untracked().expect("parameters should exist");
-                    spawn_local(async move {
-                        zmc_set_zero(vec![params.x.axis_num, params.y.axis_num, params.z.axis_num])
-                            .await
-                            .expect("Failed to set zero position");
-                    });
-                }>"坐标置零"</Button>
+                <Button
+                    disabled=Signal::derive(move || !connected())
+                    on_click=move |_ev: MouseEvent| {
+                        let params = parameters.get_untracked().expect("parameters should exist");
+                        spawn_local(async move {
+                            zmc_set_zero(
+                                    vec![params.x.axis_num, params.y.axis_num, params.z.axis_num],
+                                )
+                                .await
+                                .expect("Failed to set zero position");
+                        });
+                    }
+                >
+                    "坐标置零"
+                </Button>
             </div>
             <div class="joystick-container">
                 <Flex>
                     <Flex vertical=true>
                         <Flex justify=FlexJustify::Center>
                             <Button
+                                disabled=Signal::derive(move || !connected())
                                 icon=icondata::AiUpOutlined
                                 on:mousedown=move |_| {
                                     manual_move(1, 1);
@@ -71,6 +79,7 @@ fn ControlView() -> impl IntoView {
                         </Flex>
                         <Flex justify=FlexJustify::Center>
                             <Button
+                                disabled=Signal::derive(move || !connected())
                                 icon=icondata::AiLeftOutlined
                                 on:mousedown=move |_| {
                                     manual_move(0, -1);
@@ -81,6 +90,7 @@ fn ControlView() -> impl IntoView {
                             />
                             <div style="width: 30px;" />
                             <Button
+                                disabled=Signal::derive(move || !connected())
                                 icon=icondata::AiRightOutlined
                                 on:mousedown=move |_| {
                                     manual_move(0, 1);
@@ -92,6 +102,7 @@ fn ControlView() -> impl IntoView {
                         </Flex>
                         <Flex justify=FlexJustify::Center>
                             <Button
+                                disabled=Signal::derive(move || !connected())
                                 icon=icondata::AiDownOutlined
                                 on:mousedown=move |_| {
                                     manual_move(1, -1);
@@ -105,6 +116,7 @@ fn ControlView() -> impl IntoView {
                     <div style="width: 20px;" />
                     <Flex vertical=true justify=FlexJustify::Center>
                         <Button
+                            disabled=Signal::derive(move || !connected())
                             icon=icondata::AiArrowUpOutlined
                             on:mousedown=move |_| {
                                 manual_move(2, 1);
@@ -115,6 +127,7 @@ fn ControlView() -> impl IntoView {
                         />
                         <div style="height: 10px;" />
                         <Button
+                            disabled=Signal::derive(move || !connected())
                             icon=icondata::AiArrowDownOutlined
                             on:mousedown=move |_| {
                                 manual_move(2, -1);
@@ -132,6 +145,14 @@ fn ControlView() -> impl IntoView {
 
 #[component]
 fn ConverterControlView() -> impl IntoView {
+    let (global_state, set_global_state) =
+        use_cookie::<GlobalState, JsonSerdeCodec>("global_state_cookie");
+    // Ensure global state is initialized
+    if global_state.read_untracked().is_none() {
+        set_global_state.set(Some(GlobalState::default()));
+    }
+    let connected = move || global_state.get().unwrap().connected;
+
     let (manual_control, set_manual_control) =
         use_cookie::<ManualControl, JsonSerdeCodec>("manual_control_cookie");
     // Ensure manual control is initialized
@@ -233,6 +254,7 @@ fn ConverterControlView() -> impl IntoView {
         <Input value=frequency input_type=InputType::Number placeholder="输入频率" />
         <Switch checked=inverted value="inverted" label="反转" />
         <Button
+            disabled=Signal::derive(move || !connected())
             on_click=on_control_click
             appearance=Signal::derive(move || {
                 if enabled() { ButtonAppearance::Primary } else { ButtonAppearance::Secondary }

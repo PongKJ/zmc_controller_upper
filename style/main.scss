@@ -128,3 +128,22 @@ body {
 .axis-status-container {
   margin: 10px;
 }
+.line-container {
+  height: 100%; /* 或固定高度 */
+  max-height: 300px;
+  overflow-y: auto;
+  position: relative;
+}
+.auto-mode-label {
+  display: inline-block;
+  padding: 5px 10px;
+  margin: 5px;
+  background-color: #e1ffe1;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  font-size: 14px;
+  color: #495057;
+  font-family: sans-serif;
+  min-width: 120px;
+  text-align: center;
+}

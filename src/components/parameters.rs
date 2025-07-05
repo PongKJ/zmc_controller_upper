@@ -180,14 +180,12 @@ fn ParametersInput() -> impl IntoView {
             params.inverted_status.door_switch_level_inverted = v_door_switch_level_inverted.get();
             params.inverted_status.limit_io_level_inverted = v_limit_io_level_inverted.get();
         });
-        if connected() {
-            let p = parameters_tracked();
-            spawn_local(async move {
-                zmc_set_parameters(p)
-                    .await
-                    .expect("Failed to set parameters");
-            });
-        }
+        let p = parameters_tracked();
+        spawn_local(async move {
+            zmc_set_parameters(p)
+                .await
+                .expect("Failed to set parameters");
+        });
         log!("Parameters saved");
     };
 
@@ -448,7 +446,11 @@ fn ParametersInput() -> impl IntoView {
                 label="限位IO反向"
             />
         </div>
-        <Button class="save-button" on_click=on_save_click>
+        <Button
+            class="save-button"
+            on_click=on_save_click
+            disabled=Signal::derive(move || !connected())
+        >
             "Save"
         </Button>
     }

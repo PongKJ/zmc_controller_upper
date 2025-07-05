@@ -34,14 +34,14 @@ impl Bitmap {
     pub fn update_pos(&mut self, x: f32, y: f32) {
         // Update the origin point based on the new position
         self.origin_x = (self.width as f32 / 2.0 + x * self.scale) as usize;
-        self.origin_y = (self.height as f32 / 2.0 - y * self.scale) as usize;
+        self.origin_y = (self.height as f32 / 2.0 + y * self.scale) as usize; // Changed from - to +
     }
 
     // Set a pixel at machine coordinates (will be translated to bitmap coordinates)
     pub fn set_pixel(&mut self, x: f32, y: f32, z: f32) {
         // Convert machine coordinates to bitmap pixel coordinates
         let px = (self.origin_x as f32 + x * self.scale) as usize;
-        let py = (self.origin_y as f32 + y * self.scale) as usize;
+        let py = (self.origin_y as f32 - y * self.scale) as usize; // Changed from + to -
 
         // Check bounds
         if px >= self.width || py >= self.height {
@@ -49,16 +49,18 @@ impl Bitmap {
             return;
         }
 
-        // Determine color based on z position using HSL color wheel approach
         let (r, g, b, a) = {
-            // Map z from range -3.0 to 5.0 to hue angle 0° to 360°
-            // TODO: Adjust the range based on z values
-            let normalized_z = (z + 3.0) / 8.0; // Now 0.0 to 1.0
+            // Map z from range 0.0 to -4.0 to hue angle 0° to 360°
+            // Normalize to 0.0 to 1.0 (z=0 -> 0.0, z=-4 -> 1.0)
+            let normalized_z = (-z / 4.0).clamp(0.0, 1.0);
             let hue = (normalized_z * 360.0) % 360.0;
 
-            // Convert HSL to RGB (using fixed saturation and lightness for clarity)
-            let saturation = 0.8; // High saturation for vivid colors
-            let lightness = 0.5f32; // Medium lightness for good visibility
+            // Make colors more vivid for more negative z values
+            // Saturation increases as z becomes more negative
+            let saturation = 0.7 + (normalized_z * 0.3); // 0.7 to 1.0
+
+            // Lightness adjustment for better visibility
+            let lightness = 0.5f32;
 
             // Simplified HSL to RGB conversion
             let c = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
@@ -132,6 +134,29 @@ impl Bitmap {
             self.data[idx + 1] = 255;
             self.data[idx + 2] = 255;
             self.data[idx + 3] = 0;
+        }
+    }
+
+    /// Merges another bitmap into this one by copying non-transparent pixels
+    pub fn merge(&mut self, other: &Bitmap) {
+        // Check if bitmaps have compatible dimensions
+        if self.width != other.width || self.height != other.height {
+            println!("Warning: merging bitmaps with different dimensions");
+            return;
+        }
+
+        // For each pixel in the other bitmap
+        for i in 0..self.data.len() / 4 {
+            let idx = i * 4;
+
+            // If the pixel in other bitmap is not transparent (alpha > 0)
+            if idx + 3 < other.data.len() && other.data[idx + 3] > 0 {
+                // Copy RGBA values from other bitmap to this one
+                self.data[idx] = other.data[idx]; // R
+                self.data[idx + 1] = other.data[idx + 1]; // G
+                self.data[idx + 2] = other.data[idx + 2]; // B
+                self.data[idx + 3] = other.data[idx + 3]; // A
+            }
         }
     }
 }

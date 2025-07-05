@@ -5,6 +5,7 @@ use leptos_router::{
     StaticSegment,
 };
 use leptos_use::use_cookie;
+use leptos_ws::ServerSignal;
 use thaw::ssr::SSRMountStyleProvider;
 use thaw::*;
 
@@ -42,7 +43,6 @@ pub fn App() -> impl IntoView {
     // Provides context for WebSocket connections
     leptos_ws::provide_websocket("ws://localhost:3000/ws");
 
-
     view! {
         // injects a stylesheet into the document <head>
         // id=leptos means cargo-leptos will hot-reload this stylesheet
@@ -79,6 +79,10 @@ fn HomePage() -> impl IntoView {
     if global_state.read_untracked().is_none() {
         set_global_state.set(Some(GlobalState::default()));
     }
+    // Need to establish a WebSocket connection
+    let _ = ServerSignal::new("current_line".to_string(), 0usize).unwrap();
+    let _ = ServerSignal::new("preview_processed_line".to_string(), 0usize)
+        .expect("Failed to create client signal");
 
     let connected = move || global_state.get().unwrap().connected;
 
